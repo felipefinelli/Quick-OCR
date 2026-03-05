@@ -1,6 +1,6 @@
 """
 OCR App
-Dependências: pip install pillow pytesseract numpy
+Dependências: pip install pillow pytesseract numpy tkinterdnd2
 Tesseract:    https://github.com/UB-Mannheim/tesseract/wiki
 """
 
@@ -12,6 +12,13 @@ from collections import defaultdict
 import numpy as np
 import pytesseract
 from PIL import ImageGrab, ImageTk, Image, ImageFilter
+
+# ── Drag-and-drop (tkinterdnd2 opcional) ──────────────────────────────────────
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    _DND_AVAILABLE = True
+except ImportError:
+    _DND_AVAILABLE = False
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -100,6 +107,12 @@ def run_ocr_on(img, lang, min_conf, code_mode=False):
         output_type=pytesseract.Output.DICT
     )
     return rebuild_text(data, min_conf, code_mode=code_mode)
+
+def load_image_from_path(path):
+    """Carrega imagem a partir de caminho (lida com paths do tkinterdnd2)."""
+    # tkinterdnd2 pode retornar paths entre chaves: {C:/foo/bar.png}
+    path = path.strip().strip("{").strip("}")
+    return Image.open(path)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -232,13 +245,11 @@ class CutEditor(tk.Toplevel):
         y = self._cy(event)
         idx = self._hit(y)
         if idx is not None:
-            # Seleciona e prepara drag
             self._selected = idx
             self._dragging = True
             self._drag_orig = self._lines[idx]
             self._push_undo()
         else:
-            # Adiciona nova linha
             self._push_undo()
             self._lines.append(y)
             self._lines.sort()
@@ -278,7 +289,6 @@ class CutEditor(tk.Toplevel):
     def _auto_detect(self):
         self._push_undo()
         detected = detect_h_lines(self._img)
-        # Merge com existentes (sem duplicar)
         existing = set(self._lines)
         for y in detected:
             if not any(abs(y - e) < SNAP for e in existing):
@@ -335,7 +345,11 @@ class CutEditor(tk.Toplevel):
 # Janela principal
 # ══════════════════════════════════════════════════════════════════════════════
 
-class App(tk.Tk):
+# Extensões de imagem suportadas
+_IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif", ".webp"}
+
+
+class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("OCR")
@@ -349,6 +363,35 @@ class App(tk.Tk):
         self._build_ui()
         self.bind_all("<Control-v>", self._paste)
         self.bind_all("<Control-V>", self._paste)
+
+        # Registra drop na janela toda
+        if _DND_AVAILABLE:
+            self._register_dnd(self)
+
+    def _register_dnd(self, widget):
+        """Registra drag-and-drop em um widget usando tkinterdnd2."""
+        widget.drop_target_register(DND_FILES)
+        widget.dnd_bind("<<Drop>>", self._on_drop)
+
+    def _on_drop(self, event):
+        """Chamado quando um arquivo é solto na janela."""
+        raw = event.data or ""
+        # tkinterdnd2 pode retornar múltiplos paths separados por espaço/chaves
+        # Pega apenas o primeiro arquivo válido
+        paths = self.tk.splitlist(raw)
+        for path in paths:
+            path = path.strip().strip("{").strip("}")
+            ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
+            if ext in _IMG_EXTS:
+                try:
+                    img = Image.open(path)
+                    img.load()  # força leitura completa
+                    self._load_image(img, label=path.split("/")[-1].split("\\")[-1])
+                    return
+                except Exception as e:
+                    messagebox.showerror("Erro ao abrir imagem", str(e))
+                    return
+        self._status.set("⚠  Arquivo não reconhecido como imagem. Use PNG, JPG, BMP, etc.")
 
     def _build_ui(self):
         # ── Barra de botões ──
@@ -415,10 +458,24 @@ class App(tk.Tk):
         paned.add(lf, minsize=280)
         tk.Label(lf, text="IMAGEM", font=("Consolas", 8, "bold"),
                  fg="#45475a", bg="#181825").pack(anchor="w", padx=8, pady=(5,0))
-        self._img_lbl = tk.Label(lf, text="Cole uma imagem\nCtrl+V",
+
+        # Drop zone — frame com borda tracejada
+        self._drop_frame = tk.Frame(lf, bg="#181825", highlightthickness=2,
+                                     highlightbackground="#313244",
+                                     highlightcolor="#cba6f7")
+        self._drop_frame.pack(fill="both", expand=True, padx=4, pady=4)
+
+        dnd_hint = ("Arraste uma imagem aqui\nou Cole com Ctrl+V"
+                    if _DND_AVAILABLE else "Cole uma imagem\nCtrl+V")
+        self._img_lbl = tk.Label(self._drop_frame, text=dnd_hint,
                                   font=("Consolas", 12), fg="#45475a",
                                   bg="#181825", justify="center")
         self._img_lbl.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # Registra DnD também no frame e label internos
+        if _DND_AVAILABLE:
+            self._register_dnd(self._drop_frame)
+            self._register_dnd(self._img_lbl)
 
         # Direito — texto
         rf = tk.Frame(paned, bg="#181825")
@@ -440,9 +497,26 @@ class App(tk.Tk):
         self._txt.config(xscrollcommand=sx.set)
 
         # Status
-        self._status = tk.StringVar(value="Pronto — cole uma imagem com Ctrl+V")
+        dnd_note = "" if _DND_AVAILABLE else "  [instale tkinterdnd2 para drag-and-drop]"
+        self._status = tk.StringVar(value=f"Pronto — arraste uma imagem ou use Ctrl+V{dnd_note}")
         tk.Label(self, textvariable=self._status, font=("Consolas", 8),
                  fg="#45475a", bg="#1e1e2e", anchor="w").pack(fill="x", padx=18, pady=(0,5))
+
+    # ── Carregamento de imagem ────────────────────────────────────────────────
+
+    def _load_image(self, img, label=""):
+        """Carrega uma imagem PIL na app."""
+        self._img = img
+        self._h_lines = []
+        self._refresh_preview()
+        self._btn_cuts.config(state="normal")
+        self._btn_ocr.config(state="normal")
+        size_info = f"{img.width}×{img.height}px"
+        self._status.set(f"✔  Imagem carregada: {label}  ({size_info})" if label
+                         else f"✔  Imagem colada: {size_info}")
+        # Realça borda do drop zone brevemente
+        self._drop_frame.config(highlightbackground="#a6e3a1")
+        self.after(800, lambda: self._drop_frame.config(highlightbackground="#313244"))
 
     # ── Pasta / preview ───────────────────────────────────────────────────────
 
@@ -452,12 +526,7 @@ class App(tk.Tk):
             if not isinstance(img, Image.Image):
                 self._status.set("⚠  Copie uma imagem antes de colar.")
                 return
-            self._img = img
-            self._h_lines = []
-            self._refresh_preview()
-            self._btn_cuts.config(state="normal")
-            self._btn_ocr.config(state="normal")
-            self._status.set(f"Imagem colada: {img.width}×{img.height}px")
+            self._load_image(img)
         except Exception as e:
             messagebox.showerror("Erro", str(e))
 
@@ -535,11 +604,13 @@ class App(tk.Tk):
         self._img = None
         self._h_lines = []
         self._tk_img = None
-        self._img_lbl.config(image="", text="Cole uma imagem\nCtrl+V")
+        dnd_hint = ("Arraste uma imagem aqui\nou Cole com Ctrl+V"
+                    if _DND_AVAILABLE else "Cole uma imagem\nCtrl+V")
+        self._img_lbl.config(image="", text=dnd_hint)
         self._txt.delete("1.0", "end")
         self._btn_cuts.config(state="disabled")
         self._btn_ocr.config(state="disabled")
-        self._status.set("Pronto — cole uma imagem com Ctrl+V")
+        self._status.set("Pronto — arraste uma imagem ou use Ctrl+V")
 
 
 if __name__ == "__main__":
