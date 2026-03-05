@@ -14,7 +14,7 @@ Printscreen → `Ctrl+V` → click **"Process OCR"** → text ready to use.
 
 Don't want to install Python and dependencies? Grab the ready-to-use executable:
 
-**→ [Download Quick-OCR.exe](https://github.com/felipefinelli/Quick-OCR/releases/download/v0.1_vers%C3%A3o_inicial/Quick-OCR.exe)**
+**→ [Download Quick-OCR.exe](https://github.com/felipefinelli/Quick-OCR/releases/download/V1_Initial-Version/Quick-OCR.exe)**
 
 
 
